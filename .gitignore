@@ -1,0 +1,35 @@
+# ── Large data / output directories ───────────────────────────────────
+data/
+runs_cbm/
+runs_rlc/
+
+# ── V-Max submodule / vendor copy (track separately if needed) ─────────
+
+V-Max-Concept-Bottleneck-Models-*/
+
+# ── Python bytecode ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# ── Jupyter ────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Claude internal context ────────────────────────────────────────────
+claude-context/
+
+# ── OS / editor noise ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# ── Misc scratch / one-off files ───────────────────────────────────────
+patch_and_test_seed0.py
+inspect_seed0.py
+path_spatial_candidates.yaml
+path_spatial_concepts_analysis.md
