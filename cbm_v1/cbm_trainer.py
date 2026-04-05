@@ -299,6 +299,22 @@ def train(
         jax.random.split(rb_key, num_devices)
     )
 
+    # ── cuSolver warm-up ─────────────────────────────────────────────
+    # InvertibleBicycleModel calls a JAX linear solver during env.reset.
+    # If the cuSolver handle has not been initialised yet, JAX throws
+    # "gpusolverDnCreate failed: cuSolver internal error" — especially
+    # when VRAM is already partially occupied by the replay buffer.
+    # Running a trivial linalg op here forces the handle to be created
+    # in a controlled context BEFORE prefill floods the GPU.
+    # This is a no-op for training logic and is safe in both frozen and
+    # joint modes.
+    print("--> Warming up cuSolver handle...")
+    _dummy = jnp.linalg.solve(jnp.eye(4, dtype=jnp.float32),
+                               jnp.ones(4, dtype=jnp.float32))
+    jax.block_until_ready(_dummy)
+    del _dummy
+    print("    Done.")
+
     # ── Prefill ──────────────────────────────────────────────────────
     print(f"-> Prefilling replay buffer ({learning_start:,} steps)...")
     prefill_fn = jax.pmap(
@@ -318,7 +334,7 @@ def train(
     buffer_state = prefill_fn(next(data_gen), buffer_state, prefill_keys)
     jax.tree_util.tree_map(lambda x: x.block_until_ready(), buffer_state)
     print(f"   Prefill done in {perf_counter()-t0:.1f}s "
-          f"(sample_pos={int(jax.device_get(buffer_state.sample_position[0]))})")
+          f"(sample_pos={int(jax.device_get(buffer_state.sample_position[0]))})") 
 
     # ── Training step setup ──────────────────────────────────────────
     step_fn = partial(inference.policy_step, use_partial_transition=True)
@@ -387,8 +403,17 @@ def train(
             wall = perf_counter() - time_training
             sps = int(env_steps_per_iter / dt_train) if dt_train > 0 else 0
 
+            # Compute VMAX score: 1.0 - at_fault_collision rate.
+            # This matches the leaderboard formula in runs_rlc/runs_accuracy.txt.
+            # Logged as metrics/vmax_score so it appears in TensorBoard alongside
+            # the per-component driving metrics.
+            _at_fault = flat_metrics.get("metrics/at_fault_collision",
+                                         flat_metrics.get("at_fault_collision", None))
+            _vmax_score = (1.0 - float(_at_fault)) if _at_fault is not None else float("nan")
+
             metrics = {
                 **flat_metrics,
+                "metrics/vmax_score":     _vmax_score,
                 "runtime/sps":           sps,
                 "runtime/data_time":     dt_data,
                 "runtime/training_time": dt_train,
