@@ -278,3 +278,100 @@ def at_intersection(inp: ConceptInput) -> tuple[jax.Array, jax.Array]:
     near_tl = jnp.any(dists < 25.0, axis=-1).astype(jnp.float32)
     any_valid = jnp.any(tl_valid, axis=-1)
     return near_tl, any_valid
+
+
+# =====================================================================
+# Phase 3 concepts — Path-based spatial concepts (CBM-V2)
+# =====================================================================
+
+def path_curvature_max(inp: ConceptInput) -> tuple[jax.Array, jax.Array]:
+    """Maximum Menger curvature along the GPS path.
+
+    Captures the *sharpest* curve ahead — the geometric constraint that
+    most restricts safe driving speed.  Higher range than mean curvature.
+
+    Formula: max over interior points of 2|cross|/(|a||b||c|)
+    Source: path_features[xy] (denormalized)
+    Unit: 1/m
+    """
+    from concepts.geometry import menger_curvature
+    cfg = inp.config
+    path_xy = denorm_xy(inp.path_features, cfg)          # (..., P, 2)
+    curvatures = menger_curvature(path_xy)                # (..., P-2)
+    max_curv = jnp.max(curvatures, axis=-1)               # (...,)
+    # Path always present → always valid
+    valid = jnp.ones(max_curv.shape, dtype=bool)
+    return max_curv, valid
+
+
+def path_net_heading_change(inp: ConceptInput) -> tuple[jax.Array, jax.Array]:
+    """Signed net heading change from first to last path segment.
+
+    Positive → path turns left; negative → right; ~0 → straight.
+    NOT redundant with curvature (which is unsigned).
+
+    Formula: atan2 of last segment - atan2 of first segment, wrapped to [-π, π]
+    Source: path_features[xy] (denormalized)
+    Unit: rad
+    """
+    cfg = inp.config
+    path_xy = denorm_xy(inp.path_features, cfg)           # (..., P, 2)
+    # First segment direction
+    d_first = path_xy[..., 1, :] - path_xy[..., 0, :]    # (..., 2)
+    angle_first = jnp.arctan2(d_first[..., 1], d_first[..., 0])  # (...,)
+    # Last segment direction
+    d_last = path_xy[..., -1, :] - path_xy[..., -2, :]   # (..., 2)
+    angle_last = jnp.arctan2(d_last[..., 1], d_last[..., 0])     # (...,)
+
+    net_change = wrap_angle(angle_last - angle_first)     # (...,)
+    valid = jnp.ones(net_change.shape, dtype=bool)
+    return net_change, valid
+
+
+def path_straightness(inp: ConceptInput) -> tuple[jax.Array, jax.Array]:
+    """Straightness ratio: chord_length / arc_length.
+
+    1.0 = perfectly straight; approaches 0 for highly curved paths.
+    More interpretable and stable than raw arc_length (which has low CoV).
+
+    Formula: ||last - first|| / sum(||p_{i+1} - p_i||)
+    Source: path_features[xy] (denormalized)
+    Unit: ratio [0, 1]
+    """
+    cfg = inp.config
+    path_xy = denorm_xy(inp.path_features, cfg)           # (..., P, 2)
+
+    # Chord = straight-line distance from first to last point
+    chord = l2_norm(path_xy[..., -1, :] - path_xy[..., 0, :], axis=-1)  # (...,)
+
+    # Arc = sum of segment lengths
+    segments = path_xy[..., 1:, :] - path_xy[..., :-1, :]  # (..., P-1, 2)
+    seg_lens = l2_norm(segments, axis=-1)                    # (..., P-1)
+    arc = jnp.sum(seg_lens, axis=-1)                         # (...,)
+
+    straightness = chord / (arc + 1e-8)                      # (...,)
+    straightness = jnp.clip(straightness, 0.0, 1.0)
+
+    valid = jnp.ones(straightness.shape, dtype=bool)
+    return straightness, valid
+
+
+def heading_to_path_end(inp: ConceptInput) -> tuple[jax.Array, jax.Array]:
+    """Angle from SDC to the last path point (route endpoint).
+
+    Complementary to heading_deviation (which uses first-segment tangent).
+    Diverges from heading_deviation on curved roads — exactly when heading
+    to the goal matters most.
+
+    Formula: atan2(end_y, end_x) in SDC frame (ego at origin)
+    Source: path_features[xy] (denormalized)
+    Unit: rad
+    """
+    cfg = inp.config
+    path_xy = denorm_xy(inp.path_features, cfg)            # (..., P, 2)
+    end_pt = path_xy[..., -1, :]                           # (..., 2)
+    angle = jnp.arctan2(end_pt[..., 1], end_pt[..., 0])   # (...,)
+
+    valid = jnp.ones(angle.shape, dtype=bool)
+    return angle, valid
+

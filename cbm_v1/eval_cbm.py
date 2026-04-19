@@ -162,12 +162,6 @@ def main():
     )
     unflatten_fn = env.get_wrapper_attr("features_extractor").unflatten_features
 
-    concept_names = list(CONCEPT_REGISTRY.keys())
-    concept_types = {
-        name: schema.concept_type
-        for name, (schema, _) in CONCEPT_REGISTRY.items()
-    }
-
     # ── Load CBM checkpoint ──────────────────────────────────────────
     print("-> Loading CBM checkpoint...")
     cbm_params = load_params(args.checkpoint)
@@ -176,6 +170,13 @@ def main():
     # ── Build CBM networks ───────────────────────────────────────────
     print("-> Building CBM networks...")
     cbm_config = CBMConfig(mode=args.mode)
+    concept_names = cbm_config.concept_names
+    concept_types = {
+        name: schema.concept_type
+        for name, (schema, _) in CONCEPT_REGISTRY.items()
+        if name in concept_names
+    }
+
     cbm_network = cbm_factory.make_networks(
         observation_size=observation_size,
         action_size=action_size,
@@ -220,7 +221,7 @@ def main():
     def get_concept_targets(obs):
         """Extract ground-truth concept values from observation."""
         inp = observation_to_concept_input(obs, unflatten_fn, concept_config)
-        out = extract_all_concepts(inp)
+        out = extract_all_concepts(inp, phases=cbm_config.concept_phases)
         return out.normalized, out.valid
 
     @jax.jit
@@ -260,20 +261,53 @@ def main():
     print(f"\n-> Running rollouts ({args.num_scenarios} scenarios × 80 steps)...")
     rng = jax.random.PRNGKey(0)
     rng, rk = jax.random.split(rng)
-    reset_keys = jax.random.split(rk, args.num_scenarios)
-
+    
     t0 = perf_counter()
-    env_state = jax.jit(env.reset)(scenarios, reset_keys)
+    
+    # Batch rollouts to prevent OOM
+    CHUNK = 10
+    all_obs_list = []
+    
+    # metrics dict of lists
+    all_metrics_lists = {}
+    
+    import math
+    num_chunks = math.ceil(args.num_scenarios / CHUNK)
+    
+    for i in range(num_chunks):
+        start = i * CHUNK
+        end = min((i + 1) * CHUNK, args.num_scenarios)
+        size = end - start
+        
+        print(f"   Running chunk {i+1}/{num_chunks} ({size} scenarios)...")
+        # slice scenario
+        scenario_chunk = jax.tree_util.tree_map(lambda x: x[start:end], scenarios)
+        rk, chunk_rk = jax.random.split(rk)
+        reset_keys_chunk = jax.random.split(chunk_rk, size)
+        
+        env_state_chunk = jax.jit(env.reset)(scenario_chunk, reset_keys_chunk)
+        
+        # Collect observations and metrics over full episode
+        final_state, (chunk_obs, chunk_metrics) = jax.lax.scan(
+            eval_step, env_state_chunk, None, length=80
+        )
+        jax.tree_util.tree_map(lambda x: x.block_until_ready(), chunk_obs)
+        all_obs_list.append(chunk_obs)
+        
+        for k, v in chunk_metrics.items():
+            if k not in all_metrics_lists:
+                all_metrics_lists[k] = []
+            all_metrics_lists[k].append(v)
 
-    # Collect observations and metrics over full episode
-    env_state, (all_obs, all_metrics) = jax.lax.scan(
-        eval_step, env_state, None, length=80
-    )
-    jax.tree_util.tree_map(lambda x: x.block_until_ready(), all_obs)
     dt = perf_counter() - t0
     print(f"   Rollout done in {dt:.1f}s")
 
-    # all_obs: (80, num_scenarios, obs_size)
+    # Combine observations: chunk_obs is (T, size, D)
+    all_obs = jnp.concatenate(all_obs_list, axis=1)
+    
+    # Combine metrics: each is list of (T, size) arrays
+    all_metrics = {k: jnp.concatenate(v_list, axis=1) for k, v_list in all_metrics_lists.items()}
+
     # Flatten time × scenario for concept evaluation
     T, N, D = all_obs.shape
     obs_flat = all_obs.reshape(T * N, D)

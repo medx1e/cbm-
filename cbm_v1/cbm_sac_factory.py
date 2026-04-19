@@ -584,10 +584,16 @@ def make_sgd_step(
         )
         c_loss = concept_loss(concept_pred, concept_targets, concept_valid, cbm_config)
 
+        # Per-concept loss breakdown for TensorBoard debugging
+        per_concept_metrics = _per_concept_losses(
+            concept_pred, concept_targets, concept_valid, cbm_config
+        )
+
         metrics = {
             "policy_loss": policy_loss,
             "concept_loss": c_loss,
             "value_loss": value_loss,
+            **per_concept_metrics,
         }
 
         params = CBMSACNetworkParams(
@@ -655,3 +661,45 @@ def set_cbm_policy_module(module: CBMPolicyNetwork) -> None:
     """Register the CBMPolicyNetwork module for concept extraction."""
     global _cbm_policy_module
     _cbm_policy_module = module
+
+
+def _per_concept_losses(
+    predicted: jax.Array,
+    target: jax.Array,
+    valid: jax.Array,
+    config: CBMConfig,
+) -> dict[str, jax.Array]:
+    """Compute per-concept loss scalars for TensorBoard logging.
+
+    Returns a dict like:
+        {"concept_loss/ego_speed": 0.023, "concept_loss/traffic_light_red": 0.001, ...}
+
+    These appear under `train/concept_loss/<name>` in TensorBoard.
+    """
+    from concepts.schema import ConceptType
+    eps = 1e-6
+    names = config.concept_names
+    binary_set = set(config.binary_concept_indices)
+    metrics = {}
+
+    for i, name in enumerate(names):
+        pred_i = predicted[..., i]
+        tgt_i = target[..., i]
+        valid_i = valid[..., i].astype(jnp.float32)
+        n_valid = valid_i.sum() + eps
+
+        if i in binary_set:
+            # BCE
+            pred_safe = jnp.clip(pred_i, eps, 1.0 - eps)
+            loss_i = -(tgt_i * jnp.log(pred_safe) + (1 - tgt_i) * jnp.log(1 - pred_safe))
+        else:
+            # Huber (delta=1.0)
+            diff = pred_i - tgt_i
+            abs_diff = jnp.abs(diff)
+            loss_i = jnp.where(abs_diff <= 1.0, 0.5 * diff ** 2, abs_diff - 0.5)
+
+        masked_mean = (loss_i * valid_i).sum() / n_valid
+        metrics[f"concept_loss/{name}"] = masked_mean
+
+    return metrics
+

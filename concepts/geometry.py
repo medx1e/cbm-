@@ -88,3 +88,35 @@ def project_onto_path(
     progress = (cum_before + best_t * best_seg_len) / total_len
 
     return lateral_dist, progress
+
+
+def menger_curvature(path_xy: jax.Array, eps: float = 1e-8) -> jax.Array:
+    """Menger curvature at each interior point of a polyline.
+
+    For three consecutive points P1, P2, P3:
+        κ = 2 |cross(P2−P1, P3−P2)| / (|P2−P1| · |P3−P2| · |P3−P1|)
+
+    Args:
+        path_xy: (..., P, 2) — ordered polyline waypoints.
+        eps: numerical floor to prevent division by zero.
+
+    Returns:
+        curvatures: (..., P-2) — curvature at each interior point.
+    """
+    p1 = path_xy[..., :-2, :]   # (..., P-2, 2)
+    p2 = path_xy[..., 1:-1, :]  # (..., P-2, 2)
+    p3 = path_xy[..., 2:, :]    # (..., P-2, 2)
+
+    v1 = p2 - p1  # (..., P-2, 2)
+    v2 = p3 - p2  # (..., P-2, 2)
+
+    # 2D cross product magnitude: |v1_x * v2_y - v1_y * v2_x|
+    cross = jnp.abs(v1[..., 0] * v2[..., 1] - v1[..., 1] * v2[..., 0])
+
+    len_v1 = l2_norm(v1, axis=-1, eps=eps)
+    len_v2 = l2_norm(v2, axis=-1, eps=eps)
+    len_v3 = l2_norm(p3 - p1, axis=-1, eps=eps)
+
+    curvature = 2.0 * cross / (len_v1 * len_v2 * len_v3 + eps)
+    return curvature
+

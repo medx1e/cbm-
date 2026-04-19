@@ -197,6 +197,68 @@ _reg(
     E.at_intersection,
 )
 
+# ---- Phase 3 — Path-based spatial concepts (CBM-V2) -----------------
+
+_reg(
+    ConceptSchema(
+        name="path_curvature_max",
+        concept_type=ConceptType.CONTINUOUS,
+        description="Maximum Menger curvature along the GPS path",
+        source_fields=["path_features (xy)"],
+        formula="max_k Menger_curvature(path_xy, k)",
+        unit="1/m",
+        norm_range=(0.0, 1.0),
+        validity_rule="always valid (path always present)",
+        phase=3,
+    ),
+    E.path_curvature_max,
+)
+
+_reg(
+    ConceptSchema(
+        name="path_net_heading_change",
+        concept_type=ConceptType.CONTINUOUS,
+        description="Signed net heading change first→last path segment",
+        source_fields=["path_features (xy)"],
+        formula="wrap(atan2(last_seg) - atan2(first_seg))",
+        unit="rad",
+        norm_range=(-1.0, 1.0),
+        validity_rule="always valid",
+        phase=3,
+    ),
+    E.path_net_heading_change,
+)
+
+_reg(
+    ConceptSchema(
+        name="path_straightness",
+        concept_type=ConceptType.CONTINUOUS,
+        description="Chord/arc ratio — 1.0 = straight, 0 = maximally curved",
+        source_fields=["path_features (xy)"],
+        formula="||last - first|| / sum(||seg_i||)",
+        unit="ratio",
+        norm_range=(0.0, 1.0),
+        validity_rule="always valid",
+        phase=3,
+    ),
+    E.path_straightness,
+)
+
+_reg(
+    ConceptSchema(
+        name="heading_to_path_end",
+        concept_type=ConceptType.CONTINUOUS,
+        description="Angle from ego to route endpoint in SDC frame",
+        source_fields=["path_features (xy)"],
+        formula="atan2(end_y, end_x)",
+        unit="rad",
+        norm_range=(-1.0, 1.0),
+        validity_rule="always valid",
+        phase=3,
+    ),
+    E.heading_to_path_end,
+)
+
 # =====================================================================
 # Public API
 # =====================================================================
@@ -225,13 +287,20 @@ def _normalize_concept(raw: jax.Array, schema: ConceptSchema) -> jax.Array:
         return jnp.clip(raw, 0.0, 1.0)
     elif name == "ttc_lead_vehicle":
         return jnp.clip(raw / 10.0, 0.0, 1.0)
+    # ---- Phase 3 normalizations ----
+    elif name == "path_curvature_max":
+        return jnp.clip(raw / 0.25, 0.0, 1.0)   # 0.25 1/m ≈ 4m radius turn
+    elif name in ("path_net_heading_change", "heading_to_path_end"):
+        return jnp.clip((raw + jnp.pi) / (2 * jnp.pi), 0.0, 1.0)
+    elif name == "path_straightness":
+        return jnp.clip(raw, 0.0, 1.0)           # already [0, 1]
     else:
         return raw
 
 
 def extract_all_concepts(
     inp: ConceptInput,
-    phases: tuple[int, ...] = (1, 2),
+    phases: tuple[int, ...] = (1, 2, 3),
 ) -> ConceptOutput:
     """Run all registered concept extractors and collate results.
 
