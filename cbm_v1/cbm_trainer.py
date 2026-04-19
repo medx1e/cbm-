@@ -221,7 +221,7 @@ def train(
         include_sdc_paths=True,
         batch_dims=(num_devices, num_parallel_envs, num_episodes_per_env),
         seed=seed,
-        repeat=True,
+        repeat=None,
     )
 
     # ── Concept targets function ─────────────────────────────────────
