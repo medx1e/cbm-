@@ -129,21 +129,38 @@ def main():
     if extra:
         config = merge_cli_overrides(config, extra)
 
-    pretrained_dir = config["pretrained_dir"]
-    pretrained_cfg = load_pretrained_run_config(pretrained_dir)
+    pretrained_dir = config.get("pretrained_dir", None)
+    # Treat "none" / "" as no pretrained dir (scratch mode)
+    if pretrained_dir in (None, "none", ""):
+        pretrained_dir = None
 
     encoder_remap = config.get("encoder_remap", {"perceiver": "lq"})
     obs_type_remap = config.get("obs_type_remap", {"road": "vec", "lane": "vec"})
 
-    network_config = build_network_config(pretrained_cfg, encoder_remap)
-    observation_config_dict = pretrained_cfg.get("observation_config", {})
-    termination_keys = pretrained_cfg.get(
-        "termination_keys", ["offroad", "overlap", "run_red_light"]
-    )
-    reward_type = pretrained_cfg.get("reward_type", "linear")
-    raw_reward_config = pretrained_cfg.get("reward_config", {
-        "offroad": -1.0, "overlap": -1.0
-    })
+    if pretrained_dir is not None:
+        # ── Standard path: steal configs from the pretrained V-Max run ──
+        pretrained_cfg = load_pretrained_run_config(pretrained_dir)
+        network_config = build_network_config(pretrained_cfg, encoder_remap)
+        observation_config_dict = pretrained_cfg.get("observation_config", {})
+        termination_keys = pretrained_cfg.get(
+            "termination_keys", ["offroad", "overlap", "run_red_light"]
+        )
+        reward_type = pretrained_cfg.get("reward_type", "linear")
+        raw_reward_config = pretrained_cfg.get("reward_config", {
+            "offroad": -1.0, "overlap": -1.0
+        })
+    else:
+        # ── Scratch path: all configs come from the training YAML ────────
+        network_config = config["network_config"]
+        observation_config_dict = config.get("observation_config", {})
+        termination_keys = config.get(
+            "termination_keys", ["offroad", "overlap", "run_red_light"]
+        )
+        reward_type = config.get("reward_type", "linear")
+        raw_reward_config = config.get("reward_config", {
+            "offroad": -1.0, "overlap": -1.0
+        })
+
     # The reward wrapper expects {name: float_weight}.
     # V-Max hydra configs may have nested dicts {name: {penalty, weight, ...}}.
     # Flatten by extracting the effective weight (penalty or weight field).
@@ -163,10 +180,10 @@ def main():
     # Print summary
     print()
     print("=" * 60)
-    print("CBM-V1 TRAINING LAUNCH")
+    print("CBM TRAINING LAUNCH")
     print("=" * 60)
     print(f"  Config          : {args.config}")
-    print(f"  Pretrained      : {pretrained_dir}")
+    print(f"  Pretrained      : {pretrained_dir or 'SCRATCH (no pretrained encoder)'}")
     print(f"  Data            : {config['data_path']}")
     print(f"  Output          : {config['output_dir']}/{config['run_name']}")
     print(f"  Mode            : {config['mode']}")

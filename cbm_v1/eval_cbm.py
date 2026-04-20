@@ -95,8 +95,12 @@ def main():
                         help="Path to WOMD TFRecord file")
     parser.add_argument("--num_scenarios", type=int, default=64,
                         help="Number of scenarios to evaluate (default: 64)")
-    parser.add_argument("--mode", default="frozen", choices=["frozen", "joint"],
+    parser.add_argument("--mode", default="frozen", choices=["frozen", "joint", "scratch"],
                         help="CBM mode the checkpoint was trained with")
+    parser.add_argument("--num_concepts", type=int, default=11,
+                        help="Number of concepts (default: 11 for V1, 15 for V2)")
+    parser.add_argument("--concept_phases", nargs="+", type=int, default=[1, 2],
+                        help="Concept phases to extract (default: 1 2)")
     parser.add_argument("--output_dir", default=None,
                         help="Directory to write eval_results.json (default: checkpoint dir)")
     args = parser.parse_args()
@@ -169,7 +173,11 @@ def main():
 
     # ── Build CBM networks ───────────────────────────────────────────
     print("-> Building CBM networks...")
-    cbm_config = CBMConfig(mode=args.mode)
+    cbm_config = CBMConfig(
+        mode=args.mode,
+        num_concepts=args.num_concepts,
+        concept_phases=tuple(args.concept_phases)
+    )
     concept_names = cbm_config.concept_names
     concept_types = {
         name: schema.concept_type

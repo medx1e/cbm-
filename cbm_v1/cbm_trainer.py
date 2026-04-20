@@ -167,10 +167,10 @@ def train(
         reward_config:      Reward config dict.
         disable_tqdm:       Suppress tqdm progress bar.
     """
-    print(" CBM-V1 Training ".center(50, "="))
+    print(" CBM Training ".center(50, "="))
     print(f"  Mode      : {mode}")
     print(f"  Timesteps : {total_timesteps:,}")
-    print(f"  Encoder   : pretrained ({pretrained_dir})")
+    print(f"  Encoder   : {('pretrained (' + pretrained_dir + ')') if pretrained_dir and mode != 'scratch' else 'SCRATCH (random init)'}")
     print(f"  Data      : {data_path}")
 
     rng = jax.random.PRNGKey(seed)
@@ -251,7 +251,11 @@ def train(
 
     # ── Networks ─────────────────────────────────────────────────────
     print("-> Initializing CBM networks...")
-    pretrained_params = load_pretrained_params(pretrained_dir)
+    if mode == "scratch" or pretrained_dir in (None, "none", ""):
+        pretrained_params = None
+        print("   Scratch mode: encoder initialized with random weights.")
+    else:
+        pretrained_params = load_pretrained_params(pretrained_dir)
 
     rng, net_key = jax.random.split(rng)
     cbm_network, training_state, policy_fn = cbm_factory.initialize(
