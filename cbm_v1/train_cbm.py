@@ -230,6 +230,7 @@ def main():
         buffer_size=config["buffer_size"],
         lambda_concept=config["lambda_concept"],
         num_concepts=config.get("num_concepts", 11),
+        concept_phases=tuple(config.get("concept_phases", [1, 2])),
         log_freq=config["log_freq"],
         save_freq=config["save_freq"],
         seed=config["seed"],

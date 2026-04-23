@@ -117,6 +117,7 @@ def train(
     # CBM
     lambda_concept: float,
     num_concepts: int,
+    concept_phases: tuple[int, ...],
     # Logging
     log_freq: int,
     save_freq: int,
@@ -171,6 +172,7 @@ def train(
     print(f"  Mode      : {mode}")
     print(f"  Timesteps : {total_timesteps:,}")
     print(f"  Encoder   : {('pretrained (' + pretrained_dir + ')') if pretrained_dir and mode != 'scratch' else 'SCRATCH (random init)'}")
+    print(f"  Concepts  : {num_concepts} (phases {concept_phases})")
     print(f"  Data      : {data_path}")
 
     rng = jax.random.PRNGKey(seed)
@@ -239,7 +241,7 @@ def train(
 
     def concept_targets_fn(observations):
         inp = observation_to_concept_input(observations, unflatten_fn, concept_config)
-        out = extract_all_concepts(inp)
+        out = extract_all_concepts(inp, phases=concept_phases)
         return out.normalized, out.valid
 
     # ── CBM config ───────────────────────────────────────────────────
@@ -247,6 +249,7 @@ def train(
         num_concepts=num_concepts,
         lambda_concept=lambda_concept,
         mode=mode,
+        concept_phases=concept_phases,
     )
 
     # ── Networks ─────────────────────────────────────────────────────

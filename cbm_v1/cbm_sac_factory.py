@@ -576,7 +576,7 @@ def make_sgd_step(
             value_params,
         )
 
-        # Concept loss as a separate metric (extra forward pass, no gradient)
+        # Concept metrics (extra forward pass, no gradient)
         obs = transitions.observation
         concept_targets, concept_valid = concept_targets_fn(obs)
         concept_pred = _get_concept_predictions(
@@ -584,16 +584,26 @@ def make_sgd_step(
         )
         c_loss = concept_loss(concept_pred, concept_targets, concept_valid, cbm_config)
 
-        # Per-concept loss breakdown for TensorBoard debugging
+        # Per-concept loss, prediction stats, binary accuracy, update ratio
         per_concept_metrics = _per_concept_losses(
             concept_pred, concept_targets, concept_valid, cbm_config
+        )
+        pred_stats = _concept_pred_stats(concept_pred, cbm_config)
+        binary_acc = _binary_concept_accuracy(
+            concept_pred, concept_targets, concept_valid, cbm_config
+        )
+        grad_ratio = _param_update_ratio(
+            training_state.params.policy, policy_params
         )
 
         metrics = {
             "policy_loss": policy_loss,
             "concept_loss": c_loss,
             "value_loss": value_loss,
+            "concept_task_grad_ratio": grad_ratio,
             **per_concept_metrics,
+            **pred_stats,
+            **binary_acc,
         }
 
         params = CBMSACNetworkParams(
@@ -702,4 +712,80 @@ def _per_concept_losses(
         metrics[f"concept_loss/{name}"] = masked_mean
 
     return metrics
+
+
+def _concept_pred_stats(
+    predicted: jax.Array,
+    config: CBMConfig,
+) -> dict[str, jax.Array]:
+    """Mean and std of predicted concept values per neuron.
+
+    A std collapsing to ~0 indicates a dead/saturated concept neuron.
+    Appears under `train/concept_mean/<name>` and `train/concept_std/<name>`.
+    """
+    names = config.concept_names
+    metrics = {}
+    for i, name in enumerate(names):
+        pred_i = predicted[..., i]
+        metrics[f"concept_mean/{name}"] = jnp.mean(pred_i)
+        metrics[f"concept_std/{name}"] = jnp.std(pred_i)
+    return metrics
+
+
+def _binary_concept_accuracy(
+    predicted: jax.Array,
+    target: jax.Array,
+    valid: jax.Array,
+    config: CBMConfig,
+) -> dict[str, jax.Array]:
+    """Classification accuracy for each binary concept (threshold 0.5).
+
+    Appears under `train/concept_accuracy/<name>` in TensorBoard.
+    Complements BCE loss — loss going down does not always mean accuracy is high.
+    """
+    eps = 1e-6
+    names = config.concept_names
+    metrics = {}
+    for i in config.binary_concept_indices:
+        name = names[i]
+        pred_i = predicted[..., i]
+        tgt_i = target[..., i]
+        valid_i = valid[..., i].astype(jnp.float32)
+        correct = ((pred_i > 0.5) == (tgt_i > 0.5)).astype(jnp.float32)
+        acc = (correct * valid_i).sum() / (valid_i.sum() + eps)
+        metrics[f"concept_accuracy/{name}"] = acc
+    return metrics
+
+
+def _param_update_ratio(
+    old_params: dict,
+    new_params: dict,
+) -> jax.Array:
+    """Ratio of concept_head update norm to actor_fc update norm.
+
+    Uses parameter delta (new - old) as a proxy for effective update magnitude
+    (gradient × lr × Adam scaling). Free to compute — no extra backward pass.
+
+    A ratio << 1 means the concept head is barely moving relative to the actor,
+    suggesting lambda_concept is too small or concept loss is not driving learning.
+    Appears under `train/concept_task_grad_ratio`.
+    """
+    eps = 1e-8
+
+    def _safe_subtree(params, key):
+        inner = params.get("params", params)
+        return inner.get(key, {})
+
+    def _update_norm(key):
+        old_sub = _safe_subtree(old_params, key)
+        new_sub = _safe_subtree(new_params, key)
+        if not old_sub or not new_sub:
+            return jnp.array(eps)
+        delta = jax.tree_util.tree_map(lambda n, o: n - o, new_sub, old_sub)
+        leaves = jax.tree_util.tree_leaves(delta)
+        return jnp.sqrt(sum(jnp.sum(x ** 2) for x in leaves) + eps)
+
+    concept_head_norm = _update_norm("concept_head")
+    actor_fc_norm = _update_norm("actor_fc")
+    return concept_head_norm / (actor_fc_norm + eps)
 
